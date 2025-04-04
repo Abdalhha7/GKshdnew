@@ -14,6 +14,8 @@ from queue import PriorityQueue
 import os
 import logging
 import traceback
+from telebot.apihelper import ApiTelegramException
+import time
 
 # إعدادات تسجيل الأخطاء (Error Logging)
 logging.basicConfig(
@@ -842,4 +844,36 @@ threading.Thread(target=check_scheduled_sends, daemon=True).start()
 threading.Thread(target=process_send_queue, daemon=True).start()
 
 # بدء البوت
-bot.polling()
+# دالة آمنة لإرسال الرسائل مع التعامل مع 429
+def safe_send_message(chat_id, text):
+    try:
+        bot.send_message(chat_id, text)
+    except ApiTelegramException as e:
+        if e.error_code == 429:
+            retry_after = int(e.result_json.get("parameters", {}).get("retry_after", 5))
+            print(f"Too Many Requests. Waiting {retry_after} seconds...")
+            time.sleep(retry_after)
+            safe_send_message(chat_id, text)  # إعادة المحاولة
+        else:
+            raise e
+
+# تعديل دالة send_report لاستخدام safe_send_message
+def send_report(user_id):
+    safe_send_message(user_id, "This is your report!")  # استبدل النص بما تريد إرساله فعليًا
+
+# بدء البوت مع التعامل مع الاستثناءات
+def start_polling():
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=1, timeout=20)
+        except ApiTelegramException as e:
+            if e.error_code == 429:
+                retry_after = int(e.result_json.get("parameters", {}).get("retry_after", 5))
+                print(f"Polling failed: Too Many Requests. Retrying after {retry_after} seconds...")
+                time.sleep(retry_after)
+            else:
+                print(f"Polling error: {e}")
+                time.sleep(5)  # تأخير عام لأخطاء أخرى
+
+if __name__ == "__main__":
+    start_polling()

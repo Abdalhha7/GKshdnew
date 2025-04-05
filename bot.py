@@ -783,12 +783,66 @@ def remove_vip(message):
 def broadcast(message):
     """إذاعة عامة"""
     try:
+        successful_sends = 0
+        failed_sends = 0
         for uid in all_users:
-            bot.send_message(uid, DECORATION.format(message.text))
-            time.sleep(1)  # تأخير لتجنب 429
-        bot.send_message(message.chat.id, DECORATION.format("تم الإذاعة بنجاح"))
+            try:
+                # التحقق مما إذا كان المستخدم بوتًا
+                chat = bot.get_chat(uid)
+                if chat.type == 'private' and not chat.is_bot:  # إذا كان مستخدمًا عاديًا وليس بوتًا
+                    bot.send_message(uid, DECORATION.format(message.text))
+                    successful_sends += 1
+                    time.sleep(1)  # تأخير لتجنب 429 Too Many Requests
+                else:
+                    failed_sends += 1  # تخطي البوتات
+            except telebot.apihelper.ApiTelegramException as e:
+                if "Forbidden" in str(e):  # التعامل مع 403 أو حظر المستخدم
+                    failed_sends += 1
+                    continue
+                elif "Too Many Requests" in str(e):  # التعامل مع 429
+                    time.sleep(5)  # انتظار أطول في حالة الحد الأقصى للطلبات
+                    failed_sends += 1
+                    continue
+                else:
+                    log_error(message.from_user.id, e, f"فشل في إرسال رسالة إلى {uid}")
+                    failed_sends += 1
+                    continue
+        bot.send_message(message.chat.id, DECORATION.format(f"تم الإذاعة بنجاح\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في الإذاعة العامة")
+        bot.send_message(message.chat.id, DECORATION.format("حدث خطأ أثناء الإذاعة، تواصل مع المطور"))
+
+def send_update(message):
+    """إرسال تحديث"""
+    try:
+        successful_sends = 0
+        failed_sends = 0
+        for uid in all_users:
+            try:
+                # التحقق مما إذا كان المستخدم بوتًا
+                chat = bot.get_chat(uid)
+                if chat.type == 'private' and not chat.is_bot:  # إذا كان مستخدمًا عاديًا وليس بوتًا
+                    bot.send_message(uid, DECORATION.format(f"تحديث جديد:\n{message.text}"))
+                    successful_sends += 1
+                    time.sleep(1)  # تأخير لتجنب 429 Too Many Requests
+                else:
+                    failed_sends += 1  # تخطي البوتات
+            except telebot.apihelper.ApiTelegramException as e:
+                if "Forbidden" in str(e):  # التعامل مع 403 أو حظر المستخدم
+                    failed_sends += 1
+                    continue
+                elif "Too Many Requests" in str(e):  # التعامل مع 429
+                    time.sleep(5)  # انتظار أطول في حالة الحد الأقصى للطلبات
+                    failed_sends += 1
+                    continue
+                else:
+                    log_error(message.from_user.id, e, f"فشل في إرسال تحديث إلى {uid}")
+                    failed_sends += 1
+                    continue
+        bot.send_message(message.chat.id, DECORATION.format(f"تم إرسال التحديث\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}"))
+    except Exception as e:
+        log_error(message.from_user.id, e, "فشل في إرسال التحديث")
+        bot.send_message(message.chat.id, DECORATION.format("حدث خطأ أثناء إرسال التحديث، تواصل مع المطور"))
 
 def reset_points(message):
     """إعادة تعيين نقاط مستخدم"""

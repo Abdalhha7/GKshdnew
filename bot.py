@@ -10,11 +10,9 @@ import re
 from datetime import datetime
 import threading
 import hashlib
-from queue import PriorityQueue
 import os
 import logging
 import traceback
-from telebot.apihelper import ApiTelegramException
 
 # إعدادات تسجيل الأخطاء (Error Logging)
 logging.basicConfig(
@@ -31,7 +29,7 @@ DEVELOPER_ID = int(os.getenv("DEVELOPER_ID", 7532752552))
 bot = telebot.TeleBot(API_TOKEN)
 authorized_users = []
 banned_users = []  # قايمة المستخدمين المحظورين
-vip_users = {}  # تغيير إلى قاموس لتخزين معرف المستخدم ووقت انتهاء العضوية
+vip_users = []
 user_email_accounts = {}
 report_channel_or_group_id = {}
 report_subject = {}
@@ -43,9 +41,13 @@ sending_in_progress = {}
 stop_sending = {}
 send_schedule = {}
 saved_messages = {}
-templates = {}
-all_users = set()
-bot_enabled = True
+templates = {}  # الكليشات (كان اسمه templates)
+user_points = {}
+bot_enabled = True  # حالة البوت (مفعل/معطل)
+all_users = set()  # تخزين جميع المستخدمين اللي استخدموا البوت
+
+# زخرفة جديدة
+DECORATION = "⫷✧ {} ✧⫸"
 
 # دوال مساعدة
 def is_developer(user_id):
@@ -59,15 +61,8 @@ def is_authorized(user_id):
     return user_id in authorized_users
 
 def is_vip(user_id):
-    """التحقق إذا كان المستخدم VIP ولم تنتهِ عضويته"""
-    if user_id in vip_users:
-        expiry_time = vip_users[user_id]
-        if expiry_time is None or datetime.now() < expiry_time:
-            return True
-        else:
-            del vip_users[user_id]  # حذف العضوية إذا انتهت
-            return False
-    return False
+    """التحقق إذا كان المستخدم VIP"""
+    return user_id in vip_users
 
 def validate_email(email):
     """التحقق من صحة الإيميل"""
@@ -82,24 +77,9 @@ def log_error(user_id, error, details=""):
     error_message = f"خطأ عند المستخدم {user_id}: {str(error)}\nالتفاصيل: {details}\nTraceback: {traceback.format_exc()}"
     logging.error(error_message)
     try:
-        safe_send_message(DEVELOPER_ID, f"تنبيه خطأ\n{error_message}")
+        bot.send_message(DEVELOPER_ID, DECORATION.format(f"تنبيه خطأ\n{error_message}"))
     except Exception as e:
         logging.error(f"فشل في إرسال تنبيه للمطور: {str(e)}")
-
-def safe_send_message(chat_id, text, reply_markup=None):
-    """إرسال رسالة بطريقة آمنة مع التعامل مع 429 وإرجاع كائن الرسالة"""
-    try:
-        message = bot.send_message(chat_id, text, reply_markup=reply_markup)
-        return message
-    except ApiTelegramException as e:
-        if e.error_code == 429:
-            retry_after = int(e.result_json.get("parameters", {}).get("retry_after", 5))
-            print(f"Too Many Requests. Waiting {retry_after} seconds...")
-            time.sleep(retry_after)
-            return safe_send_message(chat_id, text, reply_markup)
-        else:
-            log_error(chat_id, e, "فشل في إرسال الرسالة")
-            raise e
 
 def send_email(email, password, subject, message, to_email, image=None, attachment=None):
     """إرسال إيميل"""
@@ -138,58 +118,59 @@ def send_email(email, password, subject, message, to_email, image=None, attachme
 def send_notification(user_id, text):
     """إرسال إشعار (بدون صوت)"""
     try:
-        safe_send_message(user_id, text)
+        bot.send_message(user_id, DECORATION.format(text))
     except Exception as e:
         log_error(user_id, e, "فشل في إرسال إشعار")
 
 def send_report(user_id):
     """إرسال التقارير (الرسائل)"""
-    global sending_in_progress, stop_sending
+    global sending_in_progress, stop_sending, user_points
     try:
         if not bot_enabled:
-            safe_send_message(user_id, "البوت معطل حاليًا من قبل المطور")
+            bot.send_message(user_id, DECORATION.format("البوت معطل حاليًا من قبل المطور"))
             return
 
         if sending_in_progress.get(user_id, False):
-            safe_send_message(user_id, "عملية الإرسال جارية بالفعل")
+            bot.send_message(user_id, DECORATION.format("عملية الإرسال جارية بالفعل"))
             return
 
         sending_in_progress[user_id] = True
         stop_sending[user_id] = False
 
+        # التحقق من صحة جميع المعلومات قبل البدء
         if not all([report_channel_or_group_id.get(user_id), report_subject.get(user_id), report_message.get(user_id)]):
-            safe_send_message(user_id, "يجب تعيين البريد والموضوع والرسالة أولاً")
+            bot.send_message(user_id, DECORATION.format("يجب تعيين البريد والموضوع والرسالة أولاً"))
             sending_in_progress[user_id] = False
             return
 
         accounts = user_email_accounts.get(user_id, [])
         if not accounts:
-            safe_send_message(user_id, "لا توجد حسابات إيميل مضافة")
+            bot.send_message(user_id, DECORATION.format("لا توجد حسابات إيميل مضافة"))
+            sending_in_progress[user_id] = False
+            return
+
+        target_count = message_count.get(user_id, 0)
+        max_count = 5000 if is_vip(user_id) else 500  # حد VIP 5000، عادي 500
+        if target_count <= 0 or target_count > max_count:
+            bot.send_message(user_id, DECORATION.format(f"عدد الرسائل يجب أن يكون بين 1 و {max_count}"))
             sending_in_progress[user_id] = False
             return
 
         successful_sends = 0
         failed_sends = 0
-        target_count = message_count.get(user_id, 0)
-        if target_count <= 0:
-            safe_send_message(user_id, "عدد الرسائل يجب أن يكون أكبر من 0")
-            sending_in_progress[user_id] = False
-            return
 
-        max_count = 5000 if is_vip(user_id) else 1000
-        if target_count > max_count:
-            target_count = max_count
-
-        progress_bar = " "
-        status_message = bot.send_message(user_id, f"تم بدء الإرسال\n{progress_bar}\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}")
+        # رسالة بدء الإرسال مع خط زيادة
+        progress_bar = "⫷✧ "
+        status_message = bot.send_message(user_id, DECORATION.format(f"تم بدء الإرسال\n{progress_bar}\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}"))
 
         if is_vip(user_id):
             accounts = sorted(accounts, key=lambda x: x.get('priority', 0), reverse=True)
 
+        # إرسال الرسائل مع التأكد من عدم التجاوز
         while successful_sends + failed_sends < target_count:
             for account in accounts:
                 if stop_sending.get(user_id, False):
-                    safe_send_message(user_id, "تم إيقاف الإرسال")
+                    bot.send_message(user_id, DECORATION.format("تم إيقاف الإرسال"))
                     sending_in_progress[user_id] = False
                     return
                 if successful_sends + failed_sends >= target_count:
@@ -204,20 +185,27 @@ def send_report(user_id):
                         report_image.get(user_id)
                     ):
                         successful_sends += 1
+                        user_points[user_id] = user_points.get(user_id, 0) + 1
+                        if user_points[user_id] >= 10000 and user_id not in vip_users:
+                            vip_users.append(user_id)
+                            user_points[user_id] -= 10000
+                            bot.send_message(user_id, DECORATION.format("مبروك! صرت VIP ليوم واحد بـ 10,000 نقطة"))
+                            threading.Timer(24 * 60 * 60, lambda: vip_users.remove(user_id) if user_id in vip_users else None).start()
                     else:
                         failed_sends += 1
                 except Exception as e:
                     failed_sends += 1
                     log_error(user_id, e, f"فشل في إرسال رسالة من {account['email']}")
 
+                # تحديث رسالة التقدم
                 progress = (successful_sends + failed_sends) / target_count * 100
-                progress_bar = " " + "*" * int(progress / 10)
+                progress_bar = "⫷✧ " + "✧" * int(progress / 10)
                 bot.edit_message_text(
                     chat_id=user_id,
                     message_id=status_message.message_id,
-                    text=f"تقدم الإرسال: {progress:.1f}%\n{progress_bar}\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}"
+                    text=DECORATION.format(f"تقدم الإرسال: {progress:.1f}%\n{progress_bar}\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}")
                 )
-                time.sleep(send_interval.get(user_id, 0) if not (is_vip(user_id) and send_interval.get(user_id, 0) == 0) else 0)
+                time.sleep(max(send_interval.get(user_id, 1), 1))  # تأخير لتجنب 429
 
         sending_in_progress[user_id] = False
         if is_vip(user_id):
@@ -225,27 +213,27 @@ def send_report(user_id):
             bot.edit_message_text(
                 chat_id=user_id,
                 message_id=status_message.message_id,
-                text=f"تم إنهاء الإرسال\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}\n- معدل النجاح: {success_rate:.1f}%"
+                text=DECORATION.format(f"تم إنهاء الإرسال\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}\n- معدل النجاح: {success_rate:.1f}%")
             )
             send_notification(user_id, "انتهى الإرسال بنجاح!")
         else:
             bot.edit_message_text(
                 chat_id=user_id,
                 message_id=status_message.message_id,
-                text=f"تم إنهاء الإرسال\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}"
+                text=DECORATION.format(f"تم إنهاء الإرسال\n- ناجح: {successful_sends}\n- فاشل: {failed_sends}")
             )
             send_notification(user_id, "انتهى الإرسال")
 
     except Exception as e:
         log_error(user_id, e, "فشل في عملية الإرسال")
         sending_in_progress[user_id] = False
-        safe_send_message(user_id, "حدث خطأ أثناء الإرسال، تواصل مع المطور")
+        bot.send_message(user_id, DECORATION.format("حدث خطأ أثناء الإرسال، تواصل مع المطور"))
 
 def schedule_send_report(user_id, send_time):
     """جدولة الإرسال"""
     try:
         send_schedule[user_id] = send_time
-        safe_send_message(user_id, f"تم جدولة الإرسال في {send_time}")
+        bot.send_message(user_id, DECORATION.format(f"تم جدولة الإرسال في {send_time}"))
     except Exception as e:
         log_error(user_id, e, "فشل في جدولة الإرسال")
 
@@ -266,65 +254,62 @@ def send_welcome(message, is_back_button=False):
     """عرض القايمة الرئيسية"""
     try:
         user_id = message.from_user.id
-        all_users.add(user_id)
+        all_users.add(user_id)  # إضافة المستخدم لقايمة المستخدمين
 
         if not bot_enabled and user_id != DEVELOPER_ID:
-            safe_send_message(user_id, "البوت معطل حاليًا من قبل المطور")
+            bot.send_message(user_id, DECORATION.format("البوت معطل حاليًا من قبل المطور"))
             return
 
         if user_id in banned_users:
-            safe_send_message(user_id, "تم حظرك من استخدام البوت")
+            bot.send_message(user_id, DECORATION.format("تم حظرك من استخدام البوت"))
             return
 
         if not is_authorized(user_id) and not is_back_button:
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("المطور", url=f"tg://user?id={DEVELOPER_ID}"))
-            safe_send_message(message.chat.id, "أنت عضو، راسل المطور للترقية!", reply_markup=markup)
+            bot.send_message(message.chat.id, DECORATION.format("أنت عضو، راسل المطور للترقية!"), reply_markup=markup)
         else:
             keyboard = types.InlineKeyboardMarkup()
             keyboard.row(
-                types.InlineKeyboardButton("إضافة الحسابات", callback_data='add_accounts'),
-                types.InlineKeyboardButton("إضافة حسابات متعددة", callback_data='add_multiple_accounts')
+                types.InlineKeyboardButton(DECORATION.format("إضافة الحسابات"), callback_data='add_accounts'),
+                types.InlineKeyboardButton(DECORATION.format("إضافة حسابات متعددة"), callback_data='add_multiple_accounts')
             )
             keyboard.row(
-                types.InlineKeyboardButton("عرض الحسابات", callback_data='view_accounts'),
-                types.InlineKeyboardButton("إحصائيات الإرسال", callback_data='view_stats')
+                types.InlineKeyboardButton(DECORATION.format("عرض الحسابات"), callback_data='view_accounts'),
+                types.InlineKeyboardButton(DECORATION.format("إحصائيات الإرسال"), callback_data='view_stats')
             )
             keyboard.row(
-                types.InlineKeyboardButton("تعيين البريد", callback_data='set_email'),
-                types.InlineKeyboardButton("تعيين الموضوع", callback_data='set_subject')
+                types.InlineKeyboardButton(DECORATION.format("تعيين البريد"), callback_data='set_email'),
+                types.InlineKeyboardButton(DECORATION.format("تعيين الموضوع"), callback_data='set_subject')
             )
             keyboard.row(
-                types.InlineKeyboardButton("تعيين الرسالة", callback_data='set_message'),
-                types.InlineKeyboardButton("تعيين الصورة", callback_data='set_image'),
-                types.InlineKeyboardButton("حذف الصورة", callback_data='delete_image')
+                types.InlineKeyboardButton(DECORATION.format("تعيين الرسالة"), callback_data='set_message'),
+                types.InlineKeyboardButton(DECORATION.format("تعيين الصورة"), callback_data='set_image'),
+                types.InlineKeyboardButton(DECORATION.format("حذف الصورة"), callback_data='delete_image')
             )
             keyboard.row(
-                types.InlineKeyboardButton("تعيين عدد الإرسال", callback_data='set_message_count'),
-                types.InlineKeyboardButton("تعيين الفترة الزمنية", callback_data='set_send_interval')
+                types.InlineKeyboardButton(DECORATION.format("تعيين عدد الإرسال"), callback_data='set_message_count'),
+                types.InlineKeyboardButton(DECORATION.format("تعيين الفترة الزمنية"), callback_data='set_send_interval')
             )
             keyboard.row(
-                types.InlineKeyboardButton("حفظ كليشة", callback_data='save_template'),
-                types.InlineKeyboardButton("تحميل كليشة", callback_data='load_template')
+                types.InlineKeyboardButton(DECORATION.format("حفظ كليشة"), callback_data='save_template'),
+                types.InlineKeyboardButton(DECORATION.format("تحميل كليشة"), callback_data='load_template')
             )
             keyboard.row(
-                types.InlineKeyboardButton("عرض المعلومات", callback_data='view_info'),
-                types.InlineKeyboardButton("عرض حالة البوت", callback_data='view_bot_status')
+                types.InlineKeyboardButton(DECORATION.format("عرض المعلومات"), callback_data='view_info'),
+                types.InlineKeyboardButton(DECORATION.format("عرض النقاط"), callback_data='view_points')
             )
             keyboard.row(
-                types.InlineKeyboardButton("شرح البوت", callback_data='explain_bot'),
-                types.InlineKeyboardButton("شرح التحديث", callback_data='explain_update')
+                types.InlineKeyboardButton(DECORATION.format("شرح البوت"), callback_data='explain_bot'),
+                types.InlineKeyboardButton(DECORATION.format("شرح التحديث"), callback_data='explain_update')
             )
-            keyboard.row(
-                types.InlineKeyboardButton("إرسال تنبيه فوري", callback_data='send_alert'),
-                types.InlineKeyboardButton("بدء الإرسال", callback_data='start_sending')
-            )
-            keyboard.add(types.InlineKeyboardButton("إيقاف الإرسال", callback_data='stop_sending'))
-            keyboard.add(types.InlineKeyboardButton("جدولة الإرسال", callback_data='schedule_send'))
+            keyboard.add(types.InlineKeyboardButton(DECORATION.format("بدء الإرسال"), callback_data='start_sending'))
+            keyboard.add(types.InlineKeyboardButton(DECORATION.format("إيقاف الإرسال"), callback_data='stop_sending'))
+            keyboard.add(types.InlineKeyboardButton(DECORATION.format("جدولة الإرسال"), callback_data='schedule_send'))
             if is_developer(user_id):
-                keyboard.add(types.InlineKeyboardButton("ملف الإيميلات", callback_data='email_file'))
-                keyboard.add(types.InlineKeyboardButton("لوحة التحكم", callback_data='developer_panel'))
-            safe_send_message(message.chat.id, "أوامر بوت الشد الخارجي", reply_markup=keyboard)
+                keyboard.add(types.InlineKeyboardButton(DECORATION.format("ملف الإيميلات"), callback_data='email_file'))
+                keyboard.add(types.InlineKeyboardButton(DECORATION.format("لوحة التحكم"), callback_data='developer_panel'))
+            bot.send_message(message.chat.id, DECORATION.format("أوامر بوت الشد الخارجي"), reply_markup=keyboard)
     except Exception as e:
         log_error(user_id, e, "فشل في عرض القايمة الرئيسية")
 
@@ -334,10 +319,10 @@ def upgrade_user(message):
     try:
         user_id = int(message.text.split()[1])
         authorized_users.append(user_id)
-        safe_send_message(user_id, "تم تفعيل البوت لك")
+        bot.send_message(user_id, DECORATION.format("تم تفعيل البوت لك"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في ترقية مستخدم")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 @bot.message_handler(func=lambda m: is_developer(m.from_user.id) and m.text.startswith("خلع"))
 def downgrade_user(message):
@@ -345,24 +330,21 @@ def downgrade_user(message):
     try:
         user_id = int(message.text.split()[1])
         authorized_users.remove(user_id)
-        safe_send_message(user_id, "تم إلغاء تفعيلك")
+        bot.send_message(user_id, DECORATION.format("تم إلغاء تفعيلك"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في إلغاء تفعيل مستخدم")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 @bot.message_handler(func=lambda m: is_developer(m.from_user.id) and m.text.startswith("vip"))
 def add_vip(message):
-    """إضافة VIP مع وقت انتهاء"""
+    """إضافة VIP"""
     try:
-        parts = message.text.split()
-        user_id = int(parts[1])
-        duration_hours = int(parts[2]) if len(parts) > 2 else 24  # افتراضي 24 ساعة
-        expiry_time = datetime.now() + timedelta(hours=duration_hours)
-        vip_users[user_id] = expiry_time
-        safe_send_message(user_id, f"تمت ترقيتك إلى VIP! تنتهي في {expiry_time}")
+        user_id = int(message.text.split()[1])
+        vip_users.append(user_id)
+        bot.send_message(user_id, DECORATION.format("تمت ترقيتك إلى VIP!"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في إضافة VIP")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم أو المدة")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 # لوحة تحكم المطور
 @bot.callback_query_handler(func=lambda call: call.data == 'developer_panel')
@@ -372,50 +354,54 @@ def developer_panel(call):
         return
     keyboard = types.InlineKeyboardMarkup()
     keyboard.row(
-        types.InlineKeyboardButton("حظر مستخدم", callback_data='ban_user'),
-        types.InlineKeyboardButton("إلغاء حظر مستخدم", callback_data='unban_user')
+        types.InlineKeyboardButton(DECORATION.format("حظر مستخدم"), callback_data='ban_user'),
+        types.InlineKeyboardButton(DECORATION.format("إلغاء حظر مستخدم"), callback_data='unban_user')
     )
     keyboard.row(
-        types.InlineKeyboardButton("إعطاء VIP", callback_data='give_vip'),
-        types.InlineKeyboardButton("سحب VIP", callback_data='remove_vip')
+        types.InlineKeyboardButton(DECORATION.format("إعطاء VIP"), callback_data='give_vip'),
+        types.InlineKeyboardButton(DECORATION.format("سحب VIP"), callback_data='remove_vip')
     )
     keyboard.row(
-        types.InlineKeyboardButton("إذاعة عامة", callback_data='broadcast'),
-        types.InlineKeyboardButton("تشغيل/تعطيل البوت", callback_data='toggle_bot')
+        types.InlineKeyboardButton(DECORATION.format("إذاعة عامة"), callback_data='broadcast'),
+        types.InlineKeyboardButton(DECORATION.format("تشغيل/تعطيل البوت"), callback_data='toggle_bot')
     )
     keyboard.row(
-        types.InlineKeyboardButton("عرض إحصائيات المستخدمين", callback_data='user_stats'),
-        types.InlineKeyboardButton("عرض قايمة المستخدمين", callback_data='list_users')
+        types.InlineKeyboardButton(DECORATION.format("عرض إحصائيات المستخدمين"), callback_data='user_stats'),
+        types.InlineKeyboardButton(DECORATION.format("إعادة تعيين نقاط مستخدم"), callback_data='reset_points')
     )
     keyboard.row(
-        types.InlineKeyboardButton("عرض قايمة VIP", callback_data='list_vip'),
-        types.InlineKeyboardButton("عرض قايمة المحظورين", callback_data='list_banned')
+        types.InlineKeyboardButton(DECORATION.format("عرض قايمة المستخدمين"), callback_data='list_users'),
+        types.InlineKeyboardButton(DECORATION.format("عرض قايمة VIP"), callback_data='list_vip')
     )
     keyboard.row(
-        types.InlineKeyboardButton("إرسال تحديث", callback_data='send_update'),
-        types.InlineKeyboardButton("عرض سجل الأخطاء", callback_data='view_errors')
+        types.InlineKeyboardButton(DECORATION.format("عرض قايمة المحظورين"), callback_data='list_banned'),
+        types.InlineKeyboardButton(DECORATION.format("إرسال تحديث"), callback_data='send_update')
     )
     keyboard.row(
-        types.InlineKeyboardButton("تنظيف سجل الأخطاء", callback_data='clear_errors'),
-        types.InlineKeyboardButton("إعادة تشغيل البوت", callback_data='restart_bot')
+        types.InlineKeyboardButton(DECORATION.format("عرض سجل الأخطاء"), callback_data='view_errors'),
+        types.InlineKeyboardButton(DECORATION.format("تنظيف سجل الأخطاء"), callback_data='clear_errors')
     )
     keyboard.row(
-        types.InlineKeyboardButton("إيقاف البوت", callback_data='stop_bot'),
-        types.InlineKeyboardButton("عرض إحصائيات البوت", callback_data='bot_stats')
+        types.InlineKeyboardButton(DECORATION.format("إعادة تشغيل البوت"), callback_data='restart_bot'),
+        types.InlineKeyboardButton(DECORATION.format("إيقاف البوت"), callback_data='stop_bot')
     )
     keyboard.row(
-        types.InlineKeyboardButton("عرض إحصائيات الإرسال", callback_data='send_stats'),
-        types.InlineKeyboardButton("إزالة كل المحظورين", callback_data='clear_banned')
+        types.InlineKeyboardButton(DECORATION.format("عرض إحصائيات البوت"), callback_data='bot_stats'),
+        types.InlineKeyboardButton(DECORATION.format("عرض إحصائيات الإرسال"), callback_data='send_stats')
     )
     keyboard.row(
-        types.InlineKeyboardButton("إزالة كل VIP", callback_data='clear_vip'),
-        types.InlineKeyboardButton("إرسال رسالة لمستخدم", callback_data='message_user')
+        types.InlineKeyboardButton(DECORATION.format("إعادة تعيين كل النقاط"), callback_data='reset_all_points'),
+        types.InlineKeyboardButton(DECORATION.format("إزالة كل المحظورين"), callback_data='clear_banned')
     )
     keyboard.row(
-        types.InlineKeyboardButton("عرض عدد المستخدمين", callback_data='count_users'),
-        types.InlineKeyboardButton("إعادة تعيين الكل", callback_data='reset_all')
+        types.InlineKeyboardButton(DECORATION.format("إزالة كل VIP"), callback_data='clear_vip'),
+        types.InlineKeyboardButton(DECORATION.format("إرسال رسالة لمستخدم"), callback_data='message_user')
     )
-    safe_send_message(call.message.chat.id, "لوحة تحكم المطور", reply_markup=keyboard)
+    keyboard.row(
+        types.InlineKeyboardButton(DECORATION.format("عjoursدد المستخدمين"), callback_data='count_users'),
+        types.InlineKeyboardButton(DECORATION.format("إعادة تعيين الكل"), callback_data='reset_all')
+    )
+    bot.send_message(call.message.chat.id, DECORATION.format("لوحة تحكم المطور"), reply_markup=keyboard)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_query(call):
@@ -425,86 +411,73 @@ def callback_query(call):
     user_id = call.from_user.id
     try:
         if call.data == 'add_accounts':
-            msg = safe_send_message(call.message.chat.id, "أرسل الإيميل والباسورد (email:password)")
-            if msg:
-                bot.register_next_step_handler(msg, add_email_account)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الإيميل والباسورد (email:password)"))
+            bot.register_next_step_handler(msg, add_email_account)
         elif call.data == 'add_multiple_accounts':
-            msg = safe_send_message(call.message.chat.id, "أرسل قائمة (email,password) بفاصلة")
-            if msg:
-                bot.register_next_step_handler(msg, add_multiple_email_accounts)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل قائمة (email,password) بفاصلة"))
+            bot.register_next_step_handler(msg, add_multiple_email_accounts)
         elif call.data == 'view_accounts':
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
             if user_id in user_email_accounts:
                 accounts = user_email_accounts[user_id]
                 keyboard = types.InlineKeyboardMarkup()
                 for idx, account in enumerate(accounts):
                     keyboard.row(
                         types.InlineKeyboardButton(account['email'], callback_data=f'account_{idx}'),
-                        types.InlineKeyboardButton("حذف", callback_data=f'delete_account_{idx}')
+                        types.InlineKeyboardButton(DECORATION.format("حذف"), callback_data=f'delete_account_{idx}')
                     )
-                keyboard.add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
-                safe_send_message(call.message.chat.id, "الحسابات المضافة:", reply_markup=keyboard)
+                keyboard.add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
+                bot.send_message(call.message.chat.id, DECORATION.format("الحسابات المضافة:"), reply_markup=keyboard)
             else:
-                safe_send_message(call.message.chat.id, "لا توجد حسابات مضافة", reply_markup=back_button)
+                bot.send_message(call.message.chat.id, DECORATION.format("لا توجد حسابات مضافة"), reply_markup=back_button)
         elif call.data == 'view_stats':
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
-            safe_send_message(call.message.chat.id, "تم حذف إحصائي Containerات الإرسال من النسخة الحالية", reply_markup=back_button)
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
+            bot.send_message(call.message.chat.id, DECORATION.format("تم حذف إحصائيات الإرسال من النسخة الحالية"), reply_markup=back_button)
         elif call.data == 'set_email':
-            msg = safe_send_message(call.message.chat.id, "أرسل البريد الآن")
-            if msg:
-                bot.register_next_step_handler(msg, set_email)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل البريد الآن"))
+            bot.register_next_step_handler(msg, set_email)
         elif call.data == 'set_subject':
-            msg = safe_send_message(call.message.chat.id, "أرسل الموضوع الآن")
-            if msg:
-                bot.register_next_step_handler(msg, set_subject)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الموضوع الآن"))
+            bot.register_next_step_handler(msg, set_subject)
         elif call.data == 'set_message':
-            msg = safe_send_message(call.message.chat.id, "أرسل الرسالة الآن")
-            if msg:
-                bot.register_next_step_handler(msg, set_message)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الرسالة الآن"))
+            bot.register_next_step_handler(msg, set_message)
         elif call.data == 'set_image':
-            msg = safe_send_message(call.message.chat.id, "أرسل الصورة الآن")
-            if msg:
-                bot.register_next_step_handler(msg, set_image)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الصورة الآن"))
+            bot.register_next_step_handler(msg, set_image)
         elif call.data == 'delete_image':
             report_image[user_id] = None
-            safe_send_message(call.message.chat.id, "تم حذف الصورة")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم حذف الصورة"))
         elif call.data == 'set_message_count':
-            msg = safe_send_message(call.message.chat.id, "أرسل عدد مرات الإرسال")
-            if msg:
-                bot.register_next_step_handler(msg, set_message_count)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل عدد مرات الإرسال"))
+            bot.register_next_step_handler(msg, set_message_count)
         elif call.data == 'set_send_interval':
-            msg = safe_send_message(call.message.chat.id, "أرسل الفترة الزمنية (ثواني)")
-            if msg:
-                bot.register_next_step_handler(msg, set_send_interval)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الفترة الزمنية (ثواني)"))
+            bot.register_next_step_handler(msg, set_send_interval)
         elif call.data == 'start_sending':
-            priority = 1 if is_vip(user_id) else 2
-            send_queue.put((priority, user_id))
-            queue_position = sum(1 for item in list(send_queue.queue) if item[1] == user_id)
-            safe_send_message(user_id, f"تمت إضافة طلبك إلى الطابور (المركز: {queue_position})")
+            send_report(user_id)  # إرسال مباشر بدون طابور
         elif call.data == 'stop_sending':
             stop_sending[user_id] = True
         elif call.data == 'schedule_send':
-            msg = safe_send_message(call.message.chat.id, "أرسل الوقت (YYYY-MM-DD HH:MM:SS)")
-            if msg:
-                bot.register_next_step_handler(msg, schedule_send)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الوقت (YYYY-MM-DD HH:MM:SS)"))
+            bot.register_next_step_handler(msg, schedule_send)
         elif call.data == 'save_template':
-            msg = safe_send_message(call.message.chat.id, "أرسل اسم الكليشة والنص (اسم:نص)")
-            if msg:
-                bot.register_next_step_handler(msg, save_template)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل اسم الكليشة والنص (اسم:نص)"))
+            bot.register_next_step_handler(msg, save_template)
         elif call.data == 'load_template':
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
             if user_id in templates and templates[user_id]:
                 keyboard = types.InlineKeyboardMarkup()
                 for name in templates[user_id]:
                     keyboard.add(types.InlineKeyboardButton(name, callback_data=f"template_{name}"))
-                keyboard.add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
-                safe_send_message(call.message.chat.id, "اختر الكليشة:", reply_markup=keyboard)
+                keyboard.add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
+                bot.send_message(call.message.chat.id, DECORATION.format("اختر الكليشة:"), reply_markup=keyboard)
             else:
-                safe_send_message(call.message.chat.id, "لا توجد كليشات محفوظة", reply_markup=back_button)
+                bot.send_message(call.message.chat.id, DECORATION.format("لا توجد كليشات محفوظة"), reply_markup=back_button)
         elif call.data.startswith('template_'):
             template_name = call.data.split('_')[1]
             report_message[user_id] = templates[user_id][template_name]
-            safe_send_message(call.message.chat.id, "تم تحميل الكليشة")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم تحميل الكليشة"))
         elif call.data == 'email_file':
             if is_developer(call.from_user.id):
                 all_emails = [account['email'] for user in user_email_accounts for account in user_email_accounts[user] if user != DEVELOPER_ID]
@@ -514,115 +487,123 @@ def callback_query(call):
                     with open("emails.txt", "rb") as f:
                         bot.send_document(call.message.chat.id, f)
                 else:
-                    safe_send_message(call.message.chat.id, "لا توجد إيميلات")
+                    bot.send_message(call.message.chat.id, DECORATION.format("لا توجد إيميلات"))
+        elif call.data == 'view_points':
+            points = user_points.get(user_id, 0)
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
+            if points >= 10000 and user_id not in vip_users:
+                vip_users.append(user_id)
+                user_points[user_id] -= 10000
+                bot.send_message(call.message.chat.id, DECORATION.format("مبروك! صرت VIP ليوم واحد بـ 10,000 نقطة!"), reply_markup=back_button)
+                threading.Timer(24 * 60 * 60, lambda: vip_users.remove(user_id) if user_id in vip_users else None).start()
+            else:
+                bot.send_message(call.message.chat.id, DECORATION.format(f"نقاطك: {points}\nاجمع 10,000 نقطة وتصير VIP ليوم واحد!"), reply_markup=back_button)
         elif call.data == 'view_info':
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
             info = f"الموضوع: {report_subject.get(user_id, 'غير محدد')}\n" \
                    f"البريد المرسل إليه: {report_channel_or_group_id.get(user_id, 'غير محدد')}\n" \
                    f"الرسالة: {report_message.get(user_id, 'غير محددة')}\n" \
                    f"عدد مرات الإرسال: {message_count.get(user_id, 'غير محدد')}"
-            safe_send_message(call.message.chat.id, f"المعلومات الحالية:\n{info}", reply_markup=back_button)
-        elif call.data == 'view_bot_status':
-            status = "مفعل" if bot_enabled else "معطل"
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
-            safe_send_message(call.message.chat.id, f"حالة البوت: {status}", reply_markup=back_button)
-        elif call.data == 'send_alert':
-            safe_send_message(call.message.chat.id, "تنبيه فوري: كل شيء يعمل بسلاسة!")
+            bot.send_message(call.message.chat.id, DECORATION.format(f"المعلومات الحالية:\n{info}"), reply_markup=back_button)
         elif call.data == 'explain_bot':
             explanation = (
                 "يا هلا! البوت هذا عبارة عن أداة رهيبة ترسل إيميلات كثيرة بضغطة زر. "
                 "بس عشان تستخدمه لازم تكون مفعّل من المطور، لو ما فعّلوك راسل المطور "
-                f"[هنا](tg://user?id={DEVELOPER_ID}) وهو يساعدك. "
+                f"[هنا](tg:// Epitomeuser?id={DEVELOPER_ID}) وهو يساعدك. "
                 "لما تتفعل، تقدر تضيف حساباتك، تحط الرسالة والموضوع، وتبدأ الإرسال. "
                 "أي استفسار، المطور موجود!"
             )
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
-            safe_send_message(call.message.chat.id, explanation, parse_mode='Markdown', reply_markup=back_button)
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
+            bot.send_message(call.message.chat.id, explanation, parse_mode='Markdown', reply_markup=back_button)
         elif call.data == 'explain_update':
             update_explanation = (
                 "التحديث الجديد جاب لكم ميزات حلوة:\n"
-                "1. العضو العادي يرسل 1000 رسالة، وVIP يرسل أكثر من 5000.\n"
-                "2. عضوية VIP مؤقتة مع وقت انتهاء تقدر تحدده.\n"
-                "3. إضافة زر عرض حالة البوت وإرسال تنبيه فوري.\n"
-                "4. أمان أعلى: كلمات السر مشفرة ومحمية.\n"
+                "1. **نظام النقاط**: كل إيميل يترسل بنجاح يعطيك نقطة، وكل 10,000 نقطة تحولها ليوم VIP.\n"
+                "2. **دعم إيميلات متنوعة**: Gmail، Yahoo، Outlook، كلهم يمديك تستخدمهم.\n"
+                "3. **إشعارات ذكية**: البوت يعلمك لو خلّص الإرسال أو صار فيه مشكلة.\n"
+                "4. **أمان أعلى**: كلمات السر مشفرة ومحمية.\n"
                 "جربها وشوف الفرق!"
             )
-            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("رجوع", callback_data='back_to_main'))
-            safe_send_message(call.message.chat.id, update_explanation, reply_markup=back_button)
+            back_button = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(DECORATION.format("رجوع"), callback_data='back_to_main'))
+            bot.send_message(call.message.chat.id, update_explanation, reply_markup=back_button)
         elif call.data == 'back_to_main':
             send_welcome(call.message, is_back_button=True)
+        # معالجة أزرار لوحة التحكم
         elif call.data == 'ban_user':
-            msg = safe_send_message(call.message.chat.id, "أرسل معرف المستخدم لحظره")
-            if msg:
-                bot.register_next_step_handler(msg, ban_user)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل معرف المستخدم لحظره"))
+            bot.register_next_step_handler(msg, ban_user)
         elif call.data == 'unban_user':
-            msg = safe_send_message(call.message.chat.id, "أرسل معرف المستخدم لإلغاء حظره")
-            if msg:
-                bot.register_next_step_handler(msg, unban_user)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل معرف المستخدم لإلغاء حظره"))
+            bot.register_next_step_handler(msg, unban_user)
         elif call.data == 'give_vip':
-            msg = safe_send_message(call.message.chat.id, "أرسل معرف المستخدم ومدة VIP بالساعات (معرف:مدة)")
-            if msg:
-                bot.register_next_step_handler(msg, give_vip)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل معرف المستخدم لإعطائه VIP"))
+            bot.register_next_step_handler(msg, give_vip)
         elif call.data == 'remove_vip':
-            msg = safe_send_message(call.message.chat.id, "أرسل معرف المستخدم لسحب VIP منه")
-            if msg:
-                bot.register_next_step_handler(msg, remove_vip)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل معرف المستخدم لسحب VIP منه"))
+            bot.register_next_step_handler(msg, remove_vip)
         elif call.data == 'broadcast':
-            msg = safe_send_message(call.message.chat.id, "أرسل الرسالة للإذاعة العامة")
-            if msg:
-                bot.register_next_step_handler(msg, broadcast)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل الرسالة للإذاعة العامة"))
+            bot.register_next_step_handler(msg, broadcast)
         elif call.data == 'toggle_bot':
             global bot_enabled
             bot_enabled = not bot_enabled
             status = "مفعل" if bot_enabled else "معطل"
-            safe_send_message(call.message.chat.id, f"تم تغيير حالة البوت إلى: {status}")
+            bot.send_message(call.message.chat.id, DECORATION.format(f"تم تغيير حالة البوت إلى: {status}"))
         elif call.data == 'user_stats':
-            stats = "\n".join([f"المستخدم {uid}" for uid in all_users])
-            safe_send_message(call.message.chat.id, f"إحصائيات المستخدمين:\n{stats}")
+            stats = ""
+            for uid in all_users:
+                points = user_points.get(uid, 0)
+                stats += f"المستخدم {uid}: {points} نقطة\n"
+            bot.send_message(call.message.chat.id, DECORATION.format(f"إحصائيات المستخدمين:\n{stats}"))
+        elif call.data == 'reset_points':
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل معرف المستخدم لإعادة تعيين نقاطه"))
+            bot.register_next_step_handler(msg, reset_points)
         elif call.data == 'list_users':
             users_list = "\n".join([str(uid) for uid in all_users])
-            safe_send_message(call.message.chat.id, f"قايمة المستخدمين:\n{users_list}")
+            bot.send_message(call.message.chat.id, DECORATION.format(f"قايمة المستخدمين:\n{users_list}"))
         elif call.data == 'list_vip':
-            vip_list = "\n".join([f"{uid} - تنتهي في: {vip_users[uid]}" for uid in vip_users])
-            safe_send_message(call.message.chat.id, f"قايمة VIP:\n{vip_list}")
+            vip_list = "\n".join([str(uid) for uid in vip_users])
+            bot.send_message(call.message.chat.id, DECORATION.format(f"قايمة VIP:\n{vip_list}"))
         elif call.data == 'list_banned':
             banned_list = "\n".join([str(uid) for uid in banned_users])
-            safe_send_message(call.message.chat.id, f"قايمة المحظورين:\n{banned_list}")
+            bot.send_message(call.message.chat.id, DECORATION.format(f"قايمة المحظورين:\n{banned_list}"))
         elif call.data == 'send_update':
-            msg = safe_send_message(call.message.chat.id, "أرسل رسالة التحديث")
-            if msg:
-                bot.register_next_step_handler(msg, send_update)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل رسالة التحديث"))
+            bot.register_next_step_handler(msg, send_update)
         elif call.data == 'view_errors':
             with open('bot_errors.log', 'r') as f:
                 errors = f.read()
-            safe_send_message(call.message.chat.id, f"سجل الأخطاء:\n{errors}")
+            bot.send_message(call.message.chat.id, DECORATION.format(f"سجل الأخطاء:\n{errors}"))
         elif call.data == 'clear_errors':
             open('bot_errors.log', 'w').close()
-            safe_send_message(call.message.chat.id, "تم تنظيف سجل الأخطاء")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم تنظيف سجل الأخطاء"))
         elif call.data == 'restart_bot':
-            safe_send_message(call.message.chat.id, "تم إعادة تشغيل البوت (محاكاة)")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم إعادة تشغيل البوت (محاكاة)"))
         elif call.data == 'stop_bot':
-            safe_send_message(call.message.chat.id, "تم إيقاف البوت (محاكاة)")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم إيقاف البوت (محاكاة)"))
         elif call.data == 'bot_stats':
-            safe_send_message(call.message.chat.id, "إحصائيات البوت: غير متوفرة حاليًا")
+            bot.send_message(call.message.chat.id, DECORATION.format("إحصائيات البوت: غير متوفرة حاليًا"))
         elif call.data == 'send_stats':
-            safe_send_message(call.message.chat.id, "إحصائيات الإرسال: تم حذفها")
+            bot.send_message(call.message.chat.id, DECORATION.format("إحصائيات الإرسال: تم حذفها"))
+        elif call.data == 'reset_all_points':
+            user_points.clear()
+            bot.send_message(call.message.chat.id, DECORATION.format("تم إعادة تعيين كل النقاط"))
         elif call.data == 'clear_banned':
             banned_users.clear()
-            safe_send_message(call.message.chat.id, "تم إزالة كل المحظورين")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم إزالة كل المحظورين"))
         elif call.data == 'clear_vip':
             vip_users.clear()
-            safe_send_message(call.message.chat.id, "تم إزالة كل VIP")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم إزالة كل VIP"))
         elif call.data == 'message_user':
-            msg = safe_send_message(call.message.chat.id, "أرسل معرف المستخدم والرسالة (معرف:رسالة)")
-            if msg:
-                bot.register_next_step_handler(msg, message_user)
+            msg = bot.send_message(call.message.chat.id, DECORATION.format("أرسل معرف المستخدم والرسالة (معرف:رسالة)"))
+            bot.register_next_step_handler(msg, message_user)
         elif call.data == 'count_users':
-            safe_send_message(call.message.chat.id, f"عدد المستخدمين: {len(all_users)}")
+            bot.send_message(call.message.chat.id, DECORATION.format(f"عدد المستخدمين: {len(all_users)}"))
         elif call.data == 'reset_all':
+            user_points.clear()
             banned_users.clear()
             vip_users.clear()
-            safe_send_message(call.message.chat.id, "تم إعادة تعيين كل شيء")
+            bot.send_message(call.message.chat.id, DECORATION.format("تم إعادة تعيين كل شيء"))
     except Exception as e:
         log_error(user_id, e, "فشل في معالجة زر")
 
@@ -635,12 +616,12 @@ def add_email_account(message):
             if user_id not in user_email_accounts:
                 user_email_accounts[user_id] = []
             user_email_accounts[user_id].append({'email': email, 'password': password})
-            safe_send_message(message.chat.id, "تم إضافة الحساب")
+            bot.send_message(message.chat.id, DECORATION.format("تم إضافة الحساب"))
         else:
-            safe_send_message(message.chat.id, "الإيميل غير صالح")
+            bot.send_message(message.chat.id, DECORATION.format("الإيميل غير صالح"))
     except Exception as e:
         log_error(user_id, e, "فشل في إضافة حساب إيميل")
-        safe_send_message(message.chat.id, "خطأ في التنسيق")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في التنسيق"))
 
 def add_multiple_email_accounts(message):
     """إضافة حسابات إيميل متعددة"""
@@ -653,10 +634,10 @@ def add_multiple_email_accounts(message):
             email, password = account.split(',')
             if validate_email(email):
                 user_email_accounts[user_id].append({'email': email, 'password': password})
-        safe_send_message(message.chat.id, "تم إضافة الحسابات")
+        bot.send_message(message.chat.id, DECORATION.format("تم إضافة الحسابات"))
     except Exception as e:
         log_error(user_id, e, "فشل في إضافة حسابات متعددة")
-        safe_send_message(message.chat.id, "خطأ في التنسيق")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في التنسيق"))
 
 def set_email(message):
     """تعيين البريد المرسل إليه"""
@@ -664,9 +645,9 @@ def set_email(message):
     try:
         if validate_email(message.text):
             report_channel_or_group_id[user_id] = message.text
-            safe_send_message(message.chat.id, "تم تعيين البريد")
+            bot.send_message(message.chat.id, DECORATION.format("تم تعيين البريد"))
         else:
-            safe_send_message(message.chat.id, "البريد غير صالح")
+            bot.send_message(message.chat.id, DECORATION.format("البريد غير صالح"))
     except Exception as e:
         log_error(user_id, e, "فشل في تعيين البريد")
 
@@ -675,7 +656,7 @@ def set_subject(message):
     user_id = message.from_user.id
     try:
         report_subject[user_id] = message.text
-        safe_send_message(message.chat.id, "تم تعيين الموضوع")
+        bot.send_message(message.chat.id, DECORATION.format("تم تعيين الموضوع"))
     except Exception as e:
         log_error(user_id, e, "فشل في تعيين الموضوع")
 
@@ -684,7 +665,7 @@ def set_message(message):
     user_id = message.from_user.id
     try:
         report_message[user_id] = message.text
-        safe_send_message(message.chat.id, "تم تعيين الرسالة")
+        bot.send_message(message.chat.id, DECORATION.format("تم تعيين الرسالة"))
     except Exception as e:
         log_error(user_id, e, "فشل في تعيين الرسالة")
 
@@ -695,9 +676,9 @@ def set_image(message):
         if message.photo:
             file_info = bot.get_file(message.photo[-1].file_id)
             report_image[user_id] = bot.download_file(file_info.file_path)
-            safe_send_message(message.chat.id, "تم تعيين الصورة")
+            bot.send_message(message.chat.id, DECORATION.format("تم تعيين الصورة"))
         else:
-            safe_send_message(message.chat.id, "لا توجد صورة")
+            bot.send_message(message.chat.id, DECORATION.format("لا توجد صورة"))
     except Exception as e:
         log_error(user_id, e, "فشل في تعيين الصورة")
 
@@ -706,30 +687,30 @@ def set_message_count(message):
     user_id = message.from_user.id
     try:
         count = int(message.text)
-        max_count = 5000 if is_vip(user_id) else 1000
-        if count <= max_count:
+        max_count = 5000 if is_vip(user_id) else 500  # حد VIP 5000، عادي 500
+        if 1 <= count <= max_count:
             message_count[user_id] = count
-            safe_send_message(message.chat.id, "تم تعيين العدد")
+            bot.send_message(message.chat.id, DECORATION.format("تم تعيين العدد"))
         else:
-            safe_send_message(message.chat.id, f"الحد الأقصى: {max_count} رسالة")
+            bot.send_message(message.chat.id, DECORATION.format(f"العدد يجب أن يكون بين 1 و {max_count}"))
     except Exception as e:
         log_error(user_id, e, "فشل في تعيين عدد الإرسال")
-        safe_send_message(message.chat.id, "أدخل رقمًا صحيحًا")
+        bot.send_message(message.chat.id, DECORATION.format("أدخل رقمًا صحيحًا"))
 
 def set_send_interval(message):
     """تعيين الفترة الزمنية"""
     user_id = message.from_user.id
     try:
         interval = int(message.text)
-        min_interval = 0 if is_vip(user_id) else 5
+        min_interval = 1  # حد أدنى 1 ثانية لتجنب 429
         if interval >= min_interval:
             send_interval[user_id] = interval
-            safe_send_message(message.chat.id, "تم تعيين الفترة")
+            bot.send_message(message.chat.id, DECORATION.format("تم تعيين الفترة"))
         else:
-            safe_send_message(message.chat.id, f"الحد الأدنى: {min_interval} ثوانٍ")
+            bot.send_message(message.chat.id, DECORATION.format(f"الحد الأدنى: {min_interval} ثوانٍ"))
     except Exception as e:
         log_error(user_id, e, "فشل في تعيين الفترة الزمنية")
-        safe_send_message(message.chat.id, "أدخل رقمًا صحيحًا")
+        bot.send_message(message.chat.id, DECORATION.format("أدخل رقمًا صحيحًا"))
 
 def schedule_send(message):
     """جدولة الإرسال"""
@@ -739,7 +720,7 @@ def schedule_send(message):
         schedule_send_report(user_id, send_time)
     except Exception as e:
         log_error(user_id, e, "فشل في جدولة الإرسال")
-        safe_send_message(message.chat.id, "خطأ في تنسيق الوقت")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تنسيق الوقت"))
 
 def save_template(message):
     """حفظ كليشة"""
@@ -749,10 +730,10 @@ def save_template(message):
         if user_id not in templates:
             templates[user_id] = {}
         templates[user_id][name] = text
-        safe_send_message(message.chat.id, "تم حفظ الكليشة")
+        bot.send_message(message.chat.id, DECORATION.format("تم حفظ الكليشة"))
     except Exception as e:
         log_error(user_id, e, "فشل في حفظ الكليشة")
-        safe_send_message(message.chat.id, "خطأ في التنسيق")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في التنسيق"))
 
 # دوال لوحة التحكم
 def ban_user(message):
@@ -760,74 +741,72 @@ def ban_user(message):
     try:
         user_id = int(message.text)
         banned_users.append(user_id)
-        safe_send_message(user_id, "تم حظرك من استخدام البوت")
-        safe_send_message(message.chat.id, "تم حظر المستخدم")
+        bot.send_message(user_id, DECORATION.format("تم حظرك من استخدام البوت"))
+        bot.send_message(message.chat.id, DECORATION.format("تم حظر المستخدم"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في حظر مستخدم")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 def unban_user(message):
     """إلغاء حظر مستخدم"""
     try:
         user_id = int(message.text)
         banned_users.remove(user_id)
-        safe_send_message(user_id, "تم إلغاء حظرك")
-        safe_send_message(message.chat.id, "تم إلغاء حظر المستخدم")
+        bot.send_message(user_id, DECORATION.format("تم إلغاء حظرك"))
+        bot.send_message(message.chat.id, DECORATION.format("تم إلغاء حظر المستخدم"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في إلغاء حظر مستخدم")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 def give_vip(message):
-    """إعطاء VIP مع وقت انتهاء"""
+    """إعطاء VIP"""
     try:
-        user_id, duration = message.text.split(':')
-        user_id = int(user_id)
-        duration_hours = int(duration)
-        expiry_time = datetime.now() + timedelta(hours=duration_hours)
-        vip_users[user_id] = expiry_time
-        safe_send_message(user_id, f"تمت ترقيتك إلى VIP! تنتهي في {expiry_time}")
-        safe_send_message(message.chat.id, "تم إعطاء VIP للمستخدم")
+        user_id = int(message.text)
+        vip_users.append(user_id)
+        bot.send_message(user_id, DECORATION.format("تمت ترقيتك إلى VIP!"))
+        bot.send_message(message.chat.id, DECORATION.format("تم إعطاء VIP للمستخدم"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في إعطاء VIP")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم أو المدة")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 def remove_vip(message):
     """سحب VIP"""
     try:
         user_id = int(message.text)
-        if user_id in vip_users:
-            del vip_users[user_id]
-            safe_send_message(user_id, "تم سحب عضوية VIP منك")
-            safe_send_message(message.chat.id, "تم سحب VIP من المستخدم")
+        vip_users.remove(user_id)
+        bot.send_message(user_id, DECORATION.format("تم سحب عضوية VIP منك"))
+        bot.send_message(message.chat.id, DECORATION.format("تم سحب VIP من المستخدم"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في سحب VIP")
-        safe_send_message(message.chat.id, "خطأ في تحديد المستخدم")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 def broadcast(message):
     """إذاعة عامة"""
     try:
         for uid in all_users:
-            try:
-                if uid == DEVELOPER_ID and uid in all_users:
-                    continue
-                safe_send_message(uid, message.text)
-            except ApiTelegramException as e:
-                if e.error_code == 403 and "bots can't send messages to bots" in str(e):
-                    log_error(message.from_user.id, e, f"تم تجاهل إرسال رسالة إلى بوت: {uid}")
-                    continue
-                else:
-                    raise e
-        safe_send_message(message.chat.id, "تم الإذاعة بنجاح")
+            bot.send_message(uid, DECORATION.format(message.text))
+            time.sleep(1)  # تأخير لتجنب 429
+        bot.send_message(message.chat.id, DECORATION.format("تم الإذاعة بنجاح"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في الإذاعة العامة")
-        safe_send_message(message.chat.id, "حدث خطأ أثناء الإذاعة، تواصل مع المطور")
+
+def reset_points(message):
+    """إعادة تعيين نقاط مستخدم"""
+    try:
+        user_id = int(message.text)
+        user_points[user_id] = 0
+        bot.send_message(message.chat.id, DECORATION.format("تم إعادة تعيين نقاط المستخدم"))
+    except Exception as e:
+        log_error(message.from_user.id, e, "فشل في إعادة تعيين النقاط")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في تحديد المستخدم"))
 
 def send_update(message):
     """إرسال تحديث"""
     try:
         for uid in all_users:
-            safe_send_message(uid, f"تحديث جديد:\n{message.text}")
-        safe_send_message(message.chat.id, "تم إرسال التحديث")
+            bot.send_message(uid, DECORATION.format(f"تحديث جديد:\n{message.text}"))
+            time.sleep(1)  # تأخير لتجنب 429
+        bot.send_message(message.chat.id, DECORATION.format("تم إرسال التحديث"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في إرسال التحديث")
 
@@ -836,11 +815,11 @@ def message_user(message):
     try:
         user_id, text = message.text.split(':')
         user_id = int(user_id)
-        safe_send_message(user_id, text)
-        safe_send_message(message.chat.id, "تم إرسال الرسالة")
+        bot.send_message(user_id, DECORATION.format(text))
+        bot.send_message(message.chat.id, DECORATION.format("تم إرسال الرسالة"))
     except Exception as e:
         log_error(message.from_user.id, e, "فشل في إرسال رسالة لمستخدم")
-        safe_send_message(message.chat.id, "خطأ في التنسيق")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في التنسيق"))
 
 # خيط خلفي للجدولة
 def check_scheduled_sends():
@@ -849,32 +828,8 @@ def check_scheduled_sends():
         check_and_send_scheduled_report()
         time.sleep(60)
 
-# خيط لمعالجة طابور ال insulatorإرسال
-def process_send_queue():
-    """خيط لمعالجة طابور الإرسال"""
-    while True:
-        if not send_queue.empty():
-            _, user_id = send_queue.get()
-            send_report(user_id)
-        time.sleep(1)
-
-# بدء الخيوط
+# بدء الخيط
 threading.Thread(target=check_scheduled_sends, daemon=True).start()
-threading.Thread(target=process_send_queue, daemon=True).start()
 
-# بدء البوت مع التعامل مع الاستثناءات
-def start_polling():
-    while True:
-        try:
-            bot.polling(none_stop=True, interval=1, timeout=20)
-        except ApiTelegramException as e:
-            if e.error_code == 429:
-                retry_after = int(e.result_json.get("parameters", {}).get("retry_after", 5))
-                print(f"Polling failed: Too Many Requests. Retrying after {retry_after} seconds...")
-                time.sleep(retry_after)
-            else:
-                print(f"Polling error: {e}")
-                time.sleep(5)
-
-if __name__ == "__main__":
-    start_polling()
+# بدء البوت
+bot.polling()

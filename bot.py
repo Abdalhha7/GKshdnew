@@ -63,7 +63,6 @@ def is_authorized(user_id):
         return False
     return user_id in authorized_users
 
-def-кафка = telebot.types
 def is_vip(user_id):
     """التحقق إذا كان المستخدم VIP"""
     return user_id in vip_users

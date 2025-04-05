@@ -811,4 +811,25 @@ def send_update(message):
         log_error(message.from_user.id, e, "فشل في إرسال التحديث")
 
 def message_user(message):
+    """إرسال رسالة لمستخدم"""
+    try:
+        user_id, text = message.text.split(':')
+        user_id = int(user_id)
+        bot.send_message(user_id, DECORATION.format(text))
+        bot.send_message(message.chat.id, DECORATION.format("تم إرسال الرسالة"))
+    except Exception as e:
+        log_error(message.from_user.id, e, "فشل في إرسال رسالة لمستخدم")
+        bot.send_message(message.chat.id, DECORATION.format("خطأ في التنسيق"))
 
+# خيط خلفي للجدولة
+def check_scheduled_sends():
+    """خيط خلفي للتحقق من الإرسالات المجدولة"""
+    while True:
+        check_and_send_scheduled_report()
+        time.sleep(60)
+
+# بدء الخيط
+threading.Thread(target=check_scheduled_sends, daemon=True).start()
+
+# بدء البوت
+bot.polling()
